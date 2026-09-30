@@ -4,14 +4,14 @@ import os
 import platform
 import random
 import sys
-from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from inspect import isbuiltin, isclass, ismethod, ismodule
 from logging import Logger, getLogger
 from types import TracebackType
-from typing import Any, Callable, Literal, TypeVar, cast, overload
+from typing import Any, Literal, TypeAlias, TypeVar, cast, overload
 from uuid import UUID, uuid4
 
 import anyio
@@ -72,11 +72,6 @@ if sys.version_info >= (3, 11):
     from typing import Self
 else:
     from typing_extensions import Self
-
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    from typing_extensions import TypeAlias
 
 _microsecond_delta = timedelta(microseconds=1)
 _zero_timedelta = timedelta()
@@ -1096,7 +1091,7 @@ class AsyncScheduler:
     def _get_task_callable(self, task: Task) -> Callable:
         try:
             return self._task_callables[task.id]
-        except KeyError:
+        except KeyError as exc:
             if task.func:
                 try:
                     func = self._task_callables[task.id] = callable_from_ref(task.func)
@@ -1113,7 +1108,7 @@ class AsyncScheduler:
                 f"such callable has been defined. Call "
                 f"scheduler.configure_task({task.id!r}, func=...) to define the local "
                 f"callable."
-            )
+            ) from exc
 
     async def _process_jobs(self, *, task_status: TaskStatus[None]) -> None:
         wakeup_event = anyio.Event()

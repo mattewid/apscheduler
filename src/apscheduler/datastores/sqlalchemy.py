@@ -11,7 +11,6 @@ from uuid import UUID
 
 import anyio
 import attrs
-import sniffio
 import tenacity
 from anyio import CancelScope, to_thread
 from attr.validators import instance_of
@@ -77,7 +76,7 @@ from .._exceptions import (
     TaskLookupError,
 )
 from .._structures import Job, JobResult, Schedule, ScheduleResult, Task
-from .._utils import create_repr
+from .._utils import create_repr, current_async_library
 from ..abc import EventBroker
 from .base import BaseExternalDataStore
 
@@ -397,8 +396,7 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
     async def start(
         self, exit_stack: AsyncExitStack, event_broker: EventBroker, logger: Logger
     ) -> None:
-        asynclib = sniffio.current_async_library() or "(unknown)"
-        if asynclib != "asyncio":
+        if (asynclib := current_async_library()) != "asyncio":
             raise RuntimeError(
                 f"This data store requires asyncio; currently running: {asynclib}"
             )
@@ -860,7 +858,7 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
     async def get_jobs(self, ids: Iterable[UUID] | None = None) -> list[Job]:
         query = self._t_jobs.select().order_by(self._t_jobs.c.id)
         if ids:
-            job_ids = [job_id for job_id in ids]
+            job_ids = list(ids)
             query = query.where(self._t_jobs.c.id.in_(job_ids))
 
         async for attempt in self._retry():
@@ -1208,6 +1206,39 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
                                 row.scheduled_fire_time,
                             )
                         )
+
+                    # Release any schedules whose leases have expired
+                    columns = [
+                        self._t_schedules.c.id,
+                        self._t_schedules.c.task_id,
+                        self._t_schedules.c.next_fire_time,
+                    ]
+                    if not self._supports_tzaware_timestamps:
+                        columns.append(self._t_schedules.c.next_fire_time_utcoffset)
+
+                    query = select(*columns).where(
+                        self._t_schedules.c.acquired_by.isnot(None),
+                        self._t_schedules.c.acquired_until < now,
+                    )
+                    expired_schedule_ids: list[str] = []
+                    for row in await self._execute(conn, query):
+                        schedule_dict = self._convert_incoming_fire_times(row._asdict())
+                        expired_schedule_ids.append(schedule_dict["id"])
+                        events.append(
+                            ScheduleUpdated(
+                                schedule_id=schedule_dict["id"],
+                                task_id=schedule_dict["task_id"],
+                                next_fire_time=schedule_dict["next_fire_time"],
+                            )
+                        )
+
+                    if expired_schedule_ids:
+                        update = (
+                            self._t_schedules.update()
+                            .where(self._t_schedules.c.id.in_(expired_schedule_ids))
+                            .values(acquired_by=None, acquired_until=None)
+                        )
+                        await self._execute(conn, update)
 
                     # Clean up finished schedules that have no running jobs
                     query = (

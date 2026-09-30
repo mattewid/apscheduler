@@ -35,6 +35,12 @@ def test_invalid_weekday_name(expr):
     exc.match("Invalid weekday name 'web'")
 
 
+@pytest.mark.parametrize("expr", ["8", "0-8"], ids=["start", "end"])
+def test_invalid_weekday_number(expr):
+    exc = pytest.raises(ValueError, CronTrigger, day_of_week=expr)
+    exc.match("Invalid weekday number '8'")
+
+
 def test_invalid_weekday_position_name():
     exc = pytest.raises(ValueError, CronTrigger, day="1st web")
     exc.match("Invalid weekday name 'web'")
@@ -44,22 +50,22 @@ def test_invalid_weekday_position_name():
     "values, expected",
     [
         (
-            dict(day="*/31"),
+            {"day": "*/31"},
             r"Error validating expression '\*/31': the step value \(31\) is higher "
             r"than the total range of the expression \(30\)",
         ),
         (
-            dict(day="4-6/3"),
+            {"day": "4-6/3"},
             r"Error validating expression '4-6/3': the step value \(3\) is higher "
             r"than the total range of the expression \(2\)",
         ),
         (
-            dict(hour="0-24"),
+            {"hour": "0-24"},
             r"Error validating expression '0-24': the last value \(24\) is higher "
             r"than the maximum value \(23\)",
         ),
         (
-            dict(day="0-3"),
+            {"day": "0-3"},
             r"Error validating expression '0-3': the first value \(0\) is lower "
             r"than the minimum value \(1\)",
         ),
@@ -356,6 +362,7 @@ def test_week_2(timezone, serializer, weekday):
     "trigger_args, start_time, start_time_fold, correct_next_date,"
     "correct_next_date_fold",
     [
+        ({"hour": 2}, datetime(2013, 3, 9, 20), 0, datetime(2013, 3, 11, 2), 0),
         ({"hour": 8}, datetime(2013, 3, 9, 12), 0, datetime(2013, 3, 10, 8), 0),
         ({"hour": 8}, datetime(2013, 11, 2, 12), 0, datetime(2013, 11, 3, 8), 0),
         (
@@ -373,7 +380,13 @@ def test_week_2(timezone, serializer, weekday):
             1,
         ),
     ],
-    ids=["absolute_spring", "absolute_autumn", "interval_spring", "interval_autumn"],
+    ids=[
+        "spring_skip_hour",
+        "absolute_spring",
+        "absolute_autumn",
+        "interval_spring",
+        "interval_autumn",
+    ],
 )
 def test_dst_change(
     trigger_args,
@@ -541,3 +554,41 @@ def test_from_crontab_start_end_time(timezone: ZoneInfo) -> None:
     )
     assert trigger.start_time == start_time
     assert trigger.end_time == end_time
+
+
+def test_aware_start_time_timezone_conversion() -> None:
+    est = ZoneInfo("America/New_York")
+    cst = ZoneInfo("America/Chicago")
+    start_time = datetime(2009, 9, 26, 10, 16, tzinfo=cst)
+    trigger = CronTrigger(hour=11, minute="*/5", timezone=est, start_time=start_time)
+    correct_next_time = datetime(2009, 9, 26, 11, 20, tzinfo=est)
+    next_time = trigger.next()
+    assert str(next_time) == str(correct_next_time)
+
+
+def test_aware_end_time_timezone_conversion() -> None:
+    est = ZoneInfo("America/New_York")
+    cst = ZoneInfo("America/Chicago")
+    start_time = datetime(2009, 9, 26, 10, 16, tzinfo=cst)
+    end_time = datetime(2009, 9, 26, 11, tzinfo=est)
+    trigger = CronTrigger(
+        hour=10, minute="*/5", timezone=cst, start_time=start_time, end_time=end_time
+    )
+    next_time = trigger.next()
+    assert next_time is None
+
+
+def test_non_existing_naive_start_time() -> None:
+    tz = ZoneInfo("Europe/Berlin")
+    start_time = datetime(2025, 3, 30, 2, 30, tzinfo=tz)
+    with pytest.raises(ValueError):
+        CronTrigger(timezone=tz, start_time=start_time)
+
+
+def test_non_existing_naive_end_time() -> None:
+    tz = ZoneInfo("Europe/Berlin")
+    start_time = datetime(2025, 3, 30, 1, 30)
+    CronTrigger(timezone=tz, start_time=start_time)  # start time is ok
+    end_time = datetime(2025, 3, 30, 2, 30)
+    with pytest.raises(ValueError):
+        CronTrigger(timezone=tz, start_time=start_time, end_time=end_time)
